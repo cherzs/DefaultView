@@ -7,7 +7,7 @@
             <tree>
                 <field name="user_id"/>
                 <field name="model_name"/>
-                <field name="last_view"/>
+                <field name="view_type"/>
                 <field name="write_date"/>
             </tree>
         </field>
