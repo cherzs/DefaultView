@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_last_view_preference_tree" model="ir.ui.view">
+        <field name="name">last.view.preference.tree</field>
+        <field name="model">last.view.preference</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="user_id"/>
+                <field name="model_name"/>
+                <field name="last_view"/>
+                <field name="write_date"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="action_last_view_preference" model="ir.actions.act_window">
+        <field name="name">View Preferences</field>
+        <field name="res_model">last.view.preference</field>
+        <field name="view_mode">tree</field>
+    </record>
+
+    <menuitem id="menu_last_view_preference"
+              name="View Preferences"
+              action="action_last_view_preference"
+              parent="base.menu_administration"
+              sequence="100"/>
+</odoo> 
