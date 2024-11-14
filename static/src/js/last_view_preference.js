@@ -74,35 +74,68 @@ registry.category("main_components").add("LastViewPreference", {
     Component: LastViewPreference,
 });
 
-// Patch the action service
+// // Patch the action service
+// const actionService = registry.category("services").get("action");
+// patch(actionService, {
+//     async doAction(action, options = {}) {
+//         console.log('Inside patched doAction');
+        
+//         if (action?.res_model && !options.viewType) {
+//             console.log(`Fetching saved view for model: ${action.res_model}`);
+//             try {
+//                 const orm = this.env.services.orm;
+//                 const savedView = await orm.call(
+//                     'res.users',
+//                     'get_last_view',
+//                     [[this.env.session.uid], action.res_model]
+//                 );
+
+//                 if (savedView) {
+//                     console.log(`Applying saved view: ${savedView} for ${action.res_model}`);
+//                     options.viewType = savedView;
+//                     if (action.views) {
+//                         action.views = action.views.filter(view => view[1] === savedView).concat(
+//                             action.views.filter(view => view[1] !== savedView)
+//                         );
+//                     }
+//                 }
+//             } catch (error) {
+//                 console.error('Error loading saved view:', error);
+//             }
+//         }
+//         return super.doAction(action, options);
+//     }
+// });
+
+// Tambahkan di bagian bawah file, setelah kode yang sudah ada
 const actionService = registry.category("services").get("action");
 patch(actionService, {
     async doAction(action, options = {}) {
-        console.log('Inside patched doAction');
+        // Panggil implementasi asli dulu
+        const originalResult = await super.doAction(action, options);
         
-        if (action?.res_model && !options.viewType) {
-            console.log(`Fetching saved view for model: ${action.res_model}`);
+        // Cek jika ini adalah window action
+        if (action?.type === 'ir.actions.act_window' && action.res_model) {
             try {
+                // Ambil preferensi view terakhir dari last.view.preference
                 const orm = this.env.services.orm;
-                const savedView = await orm.call(
-                    'res.users',
-                    'get_last_view',
-                    [[this.env.session.uid], action.res_model]
+                const lastView = await orm.call(
+                    'last.view.preference',
+                    'get_last_view_for_model',
+                    [action.res_model]
                 );
 
-                if (savedView) {
-                    console.log(`Applying saved view: ${savedView} for ${action.res_model}`);
-                    options.viewType = savedView;
-                    if (action.views) {
-                        action.views = action.views.filter(view => view[1] === savedView).concat(
-                            action.views.filter(view => view[1] !== savedView)
-                        );
-                    }
+                if (lastView && lastView.view_type) {
+                    console.log(`Found last view preference: ${lastView.view_type} for ${action.res_model}`);
+                    
+                    // Terapkan view terakhir
+                    await this.switchView(lastView.view_type);
                 }
             } catch (error) {
-                console.error('Error loading saved view:', error);
+                console.error('Error applying last view:', error);
             }
         }
-        return super.doAction(action, options);
+        
+        return originalResult;
     }
 });

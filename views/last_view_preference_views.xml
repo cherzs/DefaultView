@@ -4,19 +4,56 @@
         <field name="name">last.view.preference.tree</field>
         <field name="model">last.view.preference</field>
         <field name="arch" type="xml">
-            <tree>
+            <tree string="View Preferences" decoration-warning="view_type!='list'" create="0">
                 <field name="user_id"/>
                 <field name="model_name"/>
-                <field name="view_type"/>
-                <field name="write_date"/>
+                <field name="view_type" decoration-info="view_type=='list'" 
+                                      decoration-warning="view_type=='kanban'"
+                                      decoration-danger="view_type=='form'"/>
+                <field name="write_date" widget="datetime" optional="show"/>
+                <field name="last_accessed" widget="relative"/>
+                <button name="action_clear_preference" 
+                        type="object" 
+                        icon="fa-trash" 
+                        title="Clear Preference"/>
             </tree>
         </field>
     </record>
 
+    <record id="view_last_view_preference_search" model="ir.ui.view">
+        <field name="name">last.view.preference.search</field>
+        <field name="model">last.view.preference</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="model_description"/>
+                <field name="view_type"/>
+                <separator/>
+                <filter string="My Views" name="my_views" domain="[('user_id', '=', uid)]"/>
+                <filter string="Non-Default Views" name="non_default" domain="[('view_type', '!=', 'list')]"/>
+                <filter string="Last 24 Hours" name="last_day" domain="[('write_date', '>=', (context_today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d'))]"/>
+                <group expand="0" string="Group By">
+                    <filter string="User" name="group_user" context="{'group_by': 'user_id'}"/>
+                    <filter string="View Type" name="group_view" context="{'group_by': 'view_type'}"/>
+                    <filter string="Model" name="group_model" context="{'group_by': 'model_description'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
     <record id="action_last_view_preference" model="ir.actions.act_window">
-        <field name="name">View Preferences</field>
+        <field name="name">View Preferences History</field>
         <field name="res_model">last.view.preference</field>
         <field name="view_mode">tree</field>
+        <field name="context">{'search_default_my_views': 1, 'search_default_last_day': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No view preferences recorded yet
+            </p>
+            <p>
+                View preferences are automatically recorded when you switch views in any module.
+                The system will remember your last view choice for each module.
+            </p>
+        </field>
     </record>
 
     <menuitem id="menu_last_view_preference"
