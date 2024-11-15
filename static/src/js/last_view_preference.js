@@ -7,6 +7,7 @@ import { Component } from "@odoo/owl";
 
 class LastViewPreference extends Component {
     setup() {
+        console.log('LastViewPreference component setup initialized');
         this.orm = useService("orm");
         this.rpc = useService("rpc");
         this.notification = useService("notification");
@@ -14,128 +15,186 @@ class LastViewPreference extends Component {
         
         // Listen for view changes
         this.env.bus.addEventListener('ACTION_MANAGER:UI-UPDATED', () => {
-            this._saveCurrentView();
+            console.log('View change detected');
+            this.saveCurrentView();
         });
     }
 
-    async _saveCurrentView() {
+    async saveCurrentView() {
         const actionService = this.env.services.action;
-        if (!actionService?.currentController) return;
+        
+        if (!actionService?.currentController) {
+            console.log('No current controller found');
+            return;
+        }
 
         const controller = actionService.currentController;
         const viewType = controller.view?.type;
         const model = controller.action?.res_model;
 
+        console.log('Current view details:', {
+            viewType: viewType,
+            model: model,
+            controller: controller
+        });
+
         if (viewType && model) {
             try {
-                console.log(`Saving view preference: ${viewType} for ${model}`);
-                const response = await this.rpc('/save/last_view', {
-                    model_name: model,
-                    view_type: viewType
-                });
+                // Kirim arguments sebagai array tunggal
+                const result = await this.orm.call(
+                    'last.view.preference',
+                    'save_last_view',
+                    [model, viewType]  // Kirim sebagai array tunggal
+                );
 
-                if (response) {
-                    console.log('View preference saved successfully');
+                if (result) {
+                    // Update local storage
+                    const data = {
+                        model_name: model,
+                        view_type: viewType,
+                        timestamp: new Date().toISOString()
+                    };
+                    sessionStorage.setItem(`view_preference_${model}`, JSON.stringify(data));
+                    
                     this.notification.add(`View preference saved: ${viewType}`, {
                         type: 'success',
-                        sticky: false,
+                        sticky: false
                     });
                 }
             } catch (error) {
                 console.error('Error saving view preference:', error);
+                this.notification.add('Error saving view preference', {
+                    type: 'danger',
+                    sticky: true
+                });
             }
         }
     }
 
-    async loadSavedView(model) {
+    async loadViewPreference(model) {
+        console.log(`Loading view preference for model: ${model}`);
+        
         try {
-            const savedView = await this.orm.call(
-                'res.users',
-                'get_last_view',
-                [[this.env.session.uid], model]
-            );
-    
-            if (savedView) {
-                console.log(`Found saved view: ${savedView} for ${model}`);
-                return savedView;
+            // 1. Coba ambil dari sessionStorage (paling cepat)
+            const sessionData = sessionStorage.getItem(`view_preference_${model}`);
+            if (sessionData) {
+                const preference = JSON.parse(sessionData);
+                console.log('Found in sessionStorage:', preference);
+                return preference.view_type;
             }
+
+            // 2. Coba ambil dari localStorage
+            const localData = localStorage.getItem(`view_preference_${model}`);
+            if (localData) {
+                const preference = JSON.parse(localData);
+                console.log('Found in localStorage:', preference);
+                return preference.view_type;
+            }
+
+            // 3. Coba ambil dari database
+            const dbPreference = await this.orm.call(
+                'last.view.preference',
+                'get_last_view_for_model',
+                [model]
+            );
+
+            if (dbPreference?.view_type) {
+                console.log('Found in database:', dbPreference);
+                
+                // Update storage lokal dengan data dari database
+                const preferenceData = {
+                    model_name: model,
+                    view_type: dbPreference.view_type,
+                    timestamp: new Date().toISOString()
+                };
+
+                sessionStorage.setItem(
+                    `view_preference_${model}`, 
+                    JSON.stringify(preferenceData)
+                );
+                localStorage.setItem(
+                    `view_preference_${model}`, 
+                    JSON.stringify(preferenceData)
+                );
+
+                return dbPreference.view_type;
+            }
+
+            console.log('No view preference found in any storage');
+            return false;
+
         } catch (error) {
-            console.error('Error loading saved view:', error);
+            console.error('Error loading view preference:', error);
+            console.error('Error details:', {
+                message: error.message,
+                stack: error.stack
+            });
+            return false;
         }
-        return false;
     }
+
 
 }
 
-LastViewPreference.template = "DefaultView.LastViewPreference";
+LastViewPreference.template = "last_view_preference.LastViewPreference";
 
 // Register the component
 registry.category("main_components").add("LastViewPreference", {
     Component: LastViewPreference,
+    debug: true
 });
 
-// // Patch the action service
-// const actionService = registry.category("services").get("action");
-// patch(actionService, {
-//     async doAction(action, options = {}) {
-//         console.log('Inside patched doAction');
-        
-//         if (action?.res_model && !options.viewType) {
-//             console.log(`Fetching saved view for model: ${action.res_model}`);
-//             try {
-//                 const orm = this.env.services.orm;
-//                 const savedView = await orm.call(
-//                     'res.users',
-//                     'get_last_view',
-//                     [[this.env.session.uid], action.res_model]
-//                 );
-
-//                 if (savedView) {
-//                     console.log(`Applying saved view: ${savedView} for ${action.res_model}`);
-//                     options.viewType = savedView;
-//                     if (action.views) {
-//                         action.views = action.views.filter(view => view[1] === savedView).concat(
-//                             action.views.filter(view => view[1] !== savedView)
-//                         );
-//                     }
-//                 }
-//             } catch (error) {
-//                 console.error('Error loading saved view:', error);
-//             }
-//         }
-//         return super.doAction(action, options);
-//     }
-// });
-
-// Tambahkan di bagian bawah file, setelah kode yang sudah ada
+// Patch action service
 const actionService = registry.category("services").get("action");
 patch(actionService, {
     async doAction(action, options = {}) {
-        // Panggil implementasi asli dulu
-        const originalResult = await super.doAction(action, options);
-        
-        // Cek jika ini adalah window action
+        console.log('doAction called with:', { 
+            actionType: action?.type,
+            model: action?.res_model,
+            views: action?.views,
+            currentOptions: options 
+        });
+
         if (action?.type === 'ir.actions.act_window' && action.res_model) {
             try {
-                // Ambil preferensi view terakhir dari last.view.preference
-                const orm = this.env.services.orm;
-                const lastView = await orm.call(
-                    'last.view.preference',
-                    'get_last_view_for_model',
-                    [action.res_model]
-                );
+                // Skip jika viewType sudah ditentukan secara eksplisit dalam action
+                if (!options.viewType) {
+                    // Coba ambil dari sessionStorage dulu
+                    const sessionData = sessionStorage.getItem(`view_preference_${action.res_model}`);
+                    if (sessionData) {
+                        const preference = JSON.parse(sessionData);
+                        console.log('Found in sessionStorage:', preference);
+                        options.viewType = preference.view_type;
+                    }
+                }
 
-                if (lastView && lastView.view_type) {
-                    console.log(`Found last view preference: ${lastView.view_type} for ${action.res_model}`);
-                    
-                    // Terapkan view terakhir
-                    await this.switchView(lastView.view_type);
+                const component = new LastViewPreference();
+                console.log('Loading view preference for model:', action.res_model);
+                
+                const viewType = await component._loadViewPreference(action.res_model);
+                console.log('Loaded view preference:', viewType);
+
+                if (viewType && action.views) {
+                    // Pastikan view type yang diminta tersedia
+                    const availableViews = action.views.map(view => view[1]);
+                    console.log('Available views:', availableViews);
+
+                    if (availableViews.includes(viewType)) {
+                        console.log(`Applying saved view: ${viewType}`);
+                        options.viewType = viewType;
+                    } else {
+                        console.log(`Requested view ${viewType} not available. Using default.`);
+                    }
                 }
             } catch (error) {
-                console.error('Error applying last view:', error);
+                console.error('Error in doAction:', error);
+                console.error('Stack:', error.stack);
             }
+        } else {
+            console.log('Not a window action or no model specified');
         }
-        
-        return originalResult;
+
+        console.log('Final options being passed:', options);
+        return super.doAction(action, options);
     }
 });
