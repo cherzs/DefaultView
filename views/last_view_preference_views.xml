@@ -9,7 +9,8 @@
                 <field name="model_name"/>
                 <field name="view_type"/>
                 <field name="write_date"/>
-                <field name="create_date"/>
+                <field name="action_id"/>
+                <field name="action_name"/>
             </tree>
         </field>
     </record>
