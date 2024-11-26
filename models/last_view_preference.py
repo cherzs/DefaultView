@@ -31,9 +31,9 @@ class LastViewPreference(models.Model):
     action_name = fields.Char(related='action_id.name', string="Action Name", store=True)
 
     _sql_constraints = [
-        ('unique_user_model_active_mode', 
-         'unique(user_id, model_name, active, view_mode)',
-         'Only one active preference per user per model per mode is allowed!')
+        ('unique_active_preference_action',
+         'UNIQUE(user_id, action_id, active)',
+         'Only one active preference per user per action is allowed!')
     ]
 
     @api.model
@@ -47,66 +47,98 @@ class LastViewPreference(models.Model):
         }
 
     @api.model
-    def save_last_view(self, model_name, view_type):
+    def save_last_view(self, model_name, view_type, action_id=False):
         """Save or update last view preference."""
-        if not model_name or not view_type:
-            raise ValidationError(_("Both model name and view type are required."))
+        if not model_name or not view_type or not action_id:
+            raise ValidationError(_("Model name, view type, and action ID are required."))
         
-        _logger.debug(f"Saving view preference: user={self.env.uid}, model={model_name}, view={view_type}")
+        _logger.info(f"Saving view preference: user={self.env.uid}, model={model_name}, view={view_type}, action={action_id}")
         
-        # Cek apakah sudah ada preference untuk model ini (aktif atau tidak)
-        existing_preference = self.search([
+        # Find existing preference for this action
+        existing = self.search([
             ('user_id', '=', self.env.uid),
-            ('model_name', '=', model_name),
+            ('action_id', '=', action_id),
+            ('active', '=', True)
         ], limit=1)
         
-        # Jika sudah ada preference untuk model ini
-        if existing_preference:
-            # Jika view_type sama, tidak perlu melakukan apa-apa
-            if existing_preference.view_type == view_type:
-                return True
-                
-            # Jika view_type berbeda, update preference yang ada
-            existing_preference.write({
+        if existing:
+            # Update existing preference
+            existing.write({
                 'view_type': view_type,
+                'write_date': fields.Datetime.now()
+            })
+            _logger.info(f"Updated existing preference ID {existing.id}")
+        else:
+            # Deactivate old preferences for this model/action combination
+            old_preferences = self.search([
+                ('user_id', '=', self.env.uid),
+                ('model_name', '=', model_name),
+                ('action_id', '=', action_id),
+                ('active', '=', True)
+            ])
+            if old_preferences:
+                old_preferences.write({'active': False})
+            
+            # Create new preference
+            self.create({
+                'user_id': self.env.uid,
+                'model_name': model_name,
+                'view_type': view_type,
+                'action_id': action_id,
                 'active': True
             })
-            return True
-            
-        # Jika belum ada preference untuk model ini, buat baru
-        action = self.env['ir.actions.act_window'].search([
-            ('res_model', '=', model_name),
-            ('view_mode', 'like', view_type)
-        ], limit=1)
+            _logger.info(f"Created new preference for {model_name}")
         
-        self.create({
-            'user_id': self.env.uid,
-            'model_name': model_name,
-            'view_type': view_type,
-            'action_id': action.id if action else False,
-            'active': True
-        })
-        
+        # Commit the transaction
+        self.env.cr.commit()
         return True
 
     @api.model_create_multi
     def create(self, vals_list):
-        """Override create to ensure action_id is set."""
+        """Override create to ensure only one active preference per action."""
         for vals in vals_list:
-            if 'model_name' in vals and not vals.get('action_id'):
-                action = self.env['ir.actions.act_window'].search([
-                    ('res_model', '=', vals['model_name'])
-                ], limit=1)
-                if action:
-                    vals['action_id'] = action.id
+            if vals.get('active') and vals.get('action_id'):
+                # Deactivate existing preferences for this action
+                old_preferences = self.search([
+                    ('user_id', '=', vals.get('user_id', self.env.uid)),
+                    ('action_id', '=', vals['action_id']),
+                    ('active', '=', True)
+                ])
+                if old_preferences:
+                    old_preferences.write({'active': False})
+        
         return super().create(vals_list)
 
     def write(self, vals):
-        """Override write to ensure action_id is set."""
-        if 'model_name' in vals:
-            action = self.env['ir.actions.act_window'].search([
-                ('res_model', '=', vals['model_name'])
-            ], limit=1)
-            if action:
-                vals['action_id'] = action.id
+        """Override write to ensure only one active preference per action."""
+        if vals.get('active') and vals.get('action_id'):
+            # Deactivate existing preferences for this action
+            old_preferences = self.search([
+                ('user_id', '=', self.user_id.id),
+                ('action_id', '=', vals['action_id']),
+                ('id', '!=', self.id),
+                ('active', '=', True)
+            ])
+            if old_preferences:
+                old_preferences.write({'active': False})
+        
         return super().write(vals)
+
+    def clean_old_preferences(self):
+        """Cleanup method to remove duplicate preferences."""
+        self.env.cr.execute("""
+            WITH latest_preferences AS (
+                SELECT DISTINCT ON (user_id, action_id) 
+                    id,
+                    user_id,
+                    action_id
+                FROM last_view_preference
+                WHERE active = true
+                ORDER BY user_id, action_id, write_date DESC
+            )
+            UPDATE last_view_preference
+            SET active = false
+            WHERE active = true 
+            AND id NOT IN (SELECT id FROM latest_preferences)
+        """)
+        self.env.cr.commit()

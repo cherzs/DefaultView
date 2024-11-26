@@ -26,7 +26,7 @@ class IrActionsActWindowInherit(models.Model):
             model_name = action_data.get('res_model')
             action_id = action_data.get('id')
 
-            # Get last view preference for this model
+            # Get last view preference
             last_preference = self.env['last.view.preference'].search([
                 ('model_name', '=', model_name),
                 ('action_id', '=', action_id),
@@ -34,57 +34,58 @@ class IrActionsActWindowInherit(models.Model):
                 ('user_id', '=', self.env.uid)
             ], limit=1)
 
-            if last_preference:
-                # Get original view modes
-                original_view_modes = action_data.get('view_mode', '').split(',')
+            if last_preference and last_preference.view_type != 'form':
+                # Get current views and view_mode
+                current_views = action_data.get('views', [])
+                current_view_mode = action_data.get('view_mode', '')
                 
-                if last_preference.view_type in original_view_modes:
-                    # Reorder view modes putting last used view first
-                    new_view_modes = [last_preference.view_type] + [
-                        mode for mode in original_view_modes 
-                        if mode != last_preference.view_type
-                    ]
-                    
-                    # Update view_mode string
-                    action_data['view_mode'] = ','.join(new_view_modes)
-                    action_data['mobile_view_mode'] = last_preference.view_type
+                if not current_view_mode:
+                    return action_data
 
-                    # Update views order if present
-                    if action_data.get('views'):
-                        views = action_data['views']
-                        view_map = {v[1]: v[0] for v in views}
-                        
-                        # Create new views list with preferred view first
-                        new_views = [[view_map.get(mode, False), mode] for mode in new_view_modes]
-                        action_data['views'] = new_views
-                    
-                    _logger.info(
-                        f"Forced view mode for {model_name}: "
-                        f"view_mode={action_data['view_mode']}, "
-                        f"mobile_view_mode={action_data['mobile_view_mode']}"
-                    )
-                    
-                    # Force update in database
-                    self.env.cr.execute("""
-                        UPDATE ir_act_window 
-                        SET view_mode = %s,
-                            mobile_view_mode = %s
-                        WHERE id = %s
-                    """, (
-                        action_data['view_mode'],
-                        action_data['mobile_view_mode'],
-                        action_id
-                    ))
-                    
-                    # Clear caches
-                    self.invalidate_cache(
-                        fnames=['view_mode', 'mobile_view_mode'],
-                        ids=[action_id]
-                    )
-                    self.env.registry.clear_caches()
+                # Split view_mode into list
+                view_types = current_view_mode.split(',')
                 
+                # Check if preferred view exists in current views
+                if last_preference.view_type in view_types:
+                    # Remove preferred view from current position
+                    view_types.remove(last_preference.view_type)
+                    # Add it to the beginning (except 'form' which stays at its position)
+                    view_types.insert(0, last_preference.view_type)
+                    
+                    # Create new view_mode string
+                    new_view_mode = ','.join(view_types)
+                    
+                    # Reorder views array to match new view_mode order
+                    view_dict = {v[1]: v for v in current_views}
+                    new_views = []
+                    for vtype in view_types:
+                        if vtype in view_dict:
+                            new_views.append(view_dict[vtype])
+                        else:
+                            new_views.append([False, vtype])
+                    
+                    # Update action data
+                    action_data['view_mode'] = new_view_mode
+                    action_data['views'] = new_views
+
+                    _logger.info(
+                        f"Views reordered for {model_name} (action_id: {action_id}):\n"
+                        f"Original view_mode: {current_view_mode}\n"
+                        f"New view_mode: {new_view_mode}\n"
+                        f"New views: {new_views}"
+                    )
+
+                    # Update database
+                    self.browse(action_id).write({
+                        'view_mode': new_view_mode
+                    })
+
+                    # Clear caches
+                    self.invalidate_cache(['view_mode', 'views'], [action_id])
+                    self.env.registry.clear_caches()
+
         except Exception as e:
-            _logger.error(f"Error forcing view mode: {str(e)}")
-            
+            _logger.error(f"Error reordering views: {str(e)}")
+
         return action_data
 
