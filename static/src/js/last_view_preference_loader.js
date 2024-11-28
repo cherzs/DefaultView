@@ -67,6 +67,24 @@ function _findView(views, multiRecord, viewType) {
     return views.find((v) => v.type === viewType && v.multiRecord == multiRecord);
 }
 
+// Tambahkan utility function di awal file
+const ViewTypeUtils = {
+    normalizeViewType(viewType) {
+        // Normalize tree to list
+        return viewType === 'tree' ? 'list' : viewType;
+    },
+
+    denormalizeViews(views) {
+        // Convert view configurations
+        return views.map(view => {
+            if (view[1] === 'tree') {
+                return [view[0], 'list'];
+            }
+            return view;
+        });
+    }
+};
+
 /**
  * @returns {Promise<{actionRequest: Object, options: Object} | null>}
  */
@@ -78,11 +96,9 @@ async function _getViewPreference(env, model, actionId) {
         
         if (storedPref) {
             const preference = JSON.parse(storedPref);
-            console.log("[ViewPreference] Found in session storage:", {
-                model,
-                actionId,
-                preference
-            });
+            // Normalize view type
+            preference.view_type = ViewTypeUtils.normalizeViewType(preference.view_type);
+            console.log("[ViewPreference] Found in session storage:", preference);
             return preference;
         }
 
@@ -101,30 +117,19 @@ async function _getViewPreference(env, model, actionId) {
         if (prefs?.length) {
             const dbPref = {
                 model_name: model,
-                view_type: prefs[0].view_type,
+                view_type: ViewTypeUtils.normalizeViewType(prefs[0].view_type),
                 action_id: prefs[0].action_id,
                 action_name: prefs[0].action_name,
                 timestamp: new Date().toISOString()
             };
 
-            // Save to session storage for future use
+            // Save normalized preference to session storage
             browser.sessionStorage.setItem(sessionKey, JSON.stringify(dbPref));
-            
-            console.log("[ViewPreference] Found in database:", {
-                model,
-                actionId,
-                preference: dbPref
-            });
-            
+            console.log("[ViewPreference] Found in database:", dbPref);
             return dbPref;
         }
 
-        console.log("[ViewPreference] No preference found for:", {
-            model,
-            actionId
-        });
         return null;
-
     } catch (error) {
         console.warn("[ViewPreference] Error getting preference:", error);
         return null;
@@ -158,16 +163,16 @@ async function _getActionParams() {
                 type: "ir.actions.client",
             };
         } else {
-            // The action to load isn't the current one => executes it
-            actionRequest = state.action;
-            context.params = state;
-            Object.assign(options, {
-                additionalContext: context,
-                viewType: state.view_type,
-            });
-            if (state.id) {
-                options.props = { resId: state.id };
-            }
+            // Use doAction directly for non-client actions
+            return { 
+                actionRequest: state.action, 
+                options: {
+                    ...options,
+                    additionalContext: context,
+                    viewType: state.view_type,
+                    props: state.id ? { resId: state.id } : undefined
+                }
+            };
         }
     } else if (state.model) {
         if (state.id) {
@@ -284,61 +289,395 @@ async function switchView(viewType, props = {}) {
 }
 
 async function loadState() {
-    const switchViewParams = _getSwitchViewParams();
-    if (switchViewParams) {
-        const { viewType, props } = switchViewParams;
-        const view = _getView(viewType);
-        if (view) {
-            await switchView(viewType, props);
-            return true;
+    console.log('[ViewPreference] 🔄 Loading state...');
+    
+    try {
+        const switchViewParams = _getSwitchViewParams();
+        if (switchViewParams) {
+            const { viewType, props } = switchViewParams;
+            const view = _getView(viewType);
+            if (view) {
+                await switchView(viewType, props);
+                return true;
+            }
         }
-    } else {
+
         const actionParams = await _getActionParams();
         if (actionParams) {
             const { actionRequest, options } = actionParams;
+            
+            // Check for view preference before executing action
+            if (actionRequest.res_model) {
+                const preference = await _getViewPreference(
+                    env, 
+                    actionRequest.res_model, 
+                    actionRequest.id || actionRequest.action_id
+                );
+
+                if (preference?.view_type) {
+                    const normalizedViewType = ViewTypeUtils.normalizeViewType(preference.view_type);
+                    
+                    // Force view configuration
+                    actionRequest.view_mode = normalizedViewType;
+                    actionRequest.views = actionRequest.views || [];
+                    
+                    // Reorder views array
+                    const preferredView = actionRequest.views.find(v => 
+                        v[1] === normalizedViewType || 
+                        (normalizedViewType === 'list' && v[1] === 'tree')
+                    );
+                    
+                    if (preferredView) {
+                        actionRequest.views = [
+                            preferredView,
+                            ...actionRequest.views.filter(v => v !== preferredView)
+                        ];
+                    }
+                    
+                    // Force context
+                    actionRequest.context = {
+                        ...(actionRequest.context || {}),
+                        view_type: normalizedViewType,
+                        force_view_type: normalizedViewType
+                    };
+                    
+                    // Update options
+                    options.viewType = normalizedViewType;
+                    
+                    console.log('[ViewPreference] 📊 Applied preference in loadState:', {
+                        model: actionRequest.res_model,
+                        view_type: normalizedViewType,
+                        views: actionRequest.views?.map(v => v[1])
+                    });
+                }
+            }
+            
             await doAction(actionRequest, options);
             return true;
         }
+        return false;
+    } catch (error) {
+        console.error('[ViewPreference] ❌ Error in loadState:', error);
+        return false;
     }
-    return false;
 }
 
 // 6. State management
 function pushState(controller) {
-    const newState = {};
-    const action = controller.action;
-    if (action.id) {
-        newState.action = action.id;
-    } else if (action.type === "ir.actions.client") {
-        newState.action = action.tag;
-    }
-    if (action.context) {
-        const activeId = action.context.active_id;
-        if (activeId) {
-            newState.active_id = activeId;
+    console.log('[ViewPreference] 📌 Pushing state...');
+    
+    try {
+        const newState = {};
+        const action = controller.action;
+        
+        if (action.id) {
+            newState.action = action.id;
+        } else if (action.type === "ir.actions.client") {
+            newState.action = action.tag;
         }
-        const activeIds = action.context.active_ids;
-        if (activeIds && !(activeIds.length === 1 && activeIds[0] === activeId)) {
-            newState.active_ids = activeIds.join(",");
+        
+        if (action.context) {
+            const activeId = action.context.active_id;
+            if (activeId) {
+                newState.active_id = activeId;
+            }
+            const activeIds = action.context.active_ids;
+            if (activeIds && !(activeIds.length === 1 && activeIds[0] === activeId)) {
+                newState.active_ids = activeIds.join(",");
+            }
         }
+        
+        if (action.type === "ir.actions.act_window") {
+            // Get current view type from controller
+            const currentViewType = controller.view?.type || action.view_type;
+            
+            newState.model = action.res_model;
+            newState.view_type = currentViewType;
+            newState.id = controller.props?.resId || 
+                         (controller.props?.state && controller.props.state.resId) || 
+                         undefined;
+            
+            // Save view preference when pushing state
+            if (currentViewType && action.res_model) {
+                _saveViewPreference(
+                    env,
+                    action.res_model,
+                    currentViewType,
+                    action.id,
+                    action.display_name || action.name
+                ).catch(error => {
+                    console.warn('[ViewPreference] Error saving preference in pushState:', error);
+                });
+            }
+        }
+        
+        console.log('[ViewPreference] 🔄 New state:', newState);
+        env.services.router.pushState(newState, { replace: true });
+    } catch (error) {
+        console.error('[ViewPreference] ❌ Error in pushState:', error);
+        env.services.router.pushState({}, { replace: true });
     }
-    if (action.type === "ir.actions.act_window") {
-        const props = controller.props;
-        newState.model = props.resModel;
-        newState.view_type = props.type;
-        newState.id = props.resId || (props.state && props.state.resId) || undefined;
-    }
-    env.services.router.pushState(newState, { replace: true });
 }
 
-// 7. Return statement
-return {
-    loadState,
-    switchView,
-    _getView,
-    _getSwitchViewParams,
-    _findView,
-    pushState,
+/**
+ * @private
+ * Handle action execution with view preference
+ */
+async function doAction(actionRequest, options = {}) {
+    if (options.skipPreference) {
+        return env.services.action.doAction(actionRequest, options);
+    }
+
+    try {
+        if (actionRequest.type === 'ir.actions.act_window') {
+            const preference = await _getViewPreference(
+                env, 
+                actionRequest.res_model, 
+                actionRequest.id || actionRequest.action_id
+            );
+
+            if (preference?.view_type) {
+                // Normalize current views
+                const currentViews = ViewTypeUtils.denormalizeViews(actionRequest.views || []);
+                
+                const action = {
+                    ...actionRequest,
+                    views: [
+                        [false, preference.view_type],
+                        ...currentViews.filter(v => v[1] !== preference.view_type)
+                    ],
+                    view_type: preference.view_type,
+                };
+
+                console.log("[ViewPreference] Applying view preference:", {
+                    model: action.res_model,
+                    view: preference.view_type,
+                    action: action.id
+                });
+
+                return env.services.action.doAction(action, {
+                    ...options,
+                    skipPreference: true
+                });
+            }
+        }
+
+        return env.services.action.doAction(actionRequest, options);
+    } catch (error) {
+        console.warn("[ViewPreference] Error in doAction:", error);
+        return env.services.action.doAction(actionRequest, options);
+    }
+}
+
+// Tambahkan fungsi utility untuk save view preference
+async function _saveViewPreference(env, model, viewType, actionId, actionName) {
+    try {
+        console.log('[ViewPreference] 📡 Saving view preference:', {
+            model,
+            viewType,
+            actionId,
+            actionName
+        });
+
+        const result = await env.services.orm.call(
+            'last.view.preference',
+            'save_last_view',
+            [model, viewType, actionId, actionName]
+        );
+
+        if (result) {
+            // Save to session storage
+            const sessionKey = `view_pref_${env.services.user.userId}_${model}_${actionId}`;
+            const sessionData = {
+                model_name: model,
+                view_type: viewType,
+                action_id: actionId,
+                action_name: actionName,
+                timestamp: new Date().toISOString()
+            };
+            
+            sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
+            console.log('[ViewPreference] 💾 Saved to session storage:', sessionData);
+        }
+
+        return result;
+    } catch (error) {
+        console.error('[ViewPreference] ❌ Error saving preference:', error);
+        return false;
+    }
+}
+
+const lastViewPreferenceLoader = {
+    dependencies: ["action", "orm", "user", "router"],
+    start(env) {
+        let isProcessing = false;
+
+        // Fungsi untuk menerapkan preferensi ke action
+        const applyPreferenceToAction = async (action) => {
+            if (!action?.res_model) return action;
+
+            try {
+                const preference = await _getViewPreference(
+                    env, 
+                    action.res_model, 
+                    action.id || action.action_id
+                );
+
+                if (preference?.view_type) {
+                    // 1. Normalisasi view type dengan lebih ketat
+                    const normalizedViewType = preference.view_type === 'tree' ? 'list' : preference.view_type;
+                    
+                    // 2. Konversi semua tree view ke list view terlebih dahulu
+                    action.views = action.views.map(view => 
+                        view[1] === 'tree' ? [view[0], 'list'] : view
+                    );
+
+                    // 3. Cari view yang diinginkan dengan lebih spesifik
+                    const preferredViewIndex = action.views.findIndex(v => 
+                        v[1] === normalizedViewType
+                    );
+
+                    if (preferredViewIndex !== -1) {
+                        // 4. Pindahkan view yang dipilih ke posisi pertama
+                        const [selectedView] = action.views.splice(preferredViewIndex, 1);
+                        action.views = [selectedView, ...action.views];
+                        
+                        // 5. Update konfigurasi dengan lebih tegas
+                        action.view_type = normalizedViewType;
+                        action.view_mode = action.views.map(v => v[1]).join(',');
+                        
+                        // 6. Paksa context untuk list view
+                        action.context = {
+                            ...(action.context || {}),
+                            view_type: normalizedViewType,
+                            force_view_type: normalizedViewType,
+                            initial_view: normalizedViewType
+                        };
+
+                        // 7. Hapus pengaturan view yang mungkin bertentangan
+                        if (action.context?.default_view_type) {
+                            delete action.context.default_view_type;
+                        }
+                        
+                        console.log('[ViewPreference] 📊 Final action config:', {
+                            view_type: action.view_type,
+                            view_mode: action.view_mode,
+                            views: action.views.map(v => `${v[1]}(${v[0]})`),
+                            context: action.context
+                        });
+                    }
+                }
+            } catch (error) {
+                console.warn('[ViewPreference] Error applying preference:', error);
+            }
+            
+            return action;
+        };
+
+        // Patch loadAction untuk menangani navigasi awal
+        const originalLoadAction = env.services.action.loadAction;
+        env.services.action.loadAction = async function(actionRequest, context = {}) {
+            const action = await originalLoadAction.call(this, actionRequest, context);
+            if (action?.type === 'ir.actions.act_window') {
+                return applyPreferenceToAction(action);
+            }
+            return action;
+        };
+
+        // Patch doAction untuk menangani navigasi
+        const originalDoAction = env.services.action.doAction;
+        env.services.action.doAction = async function(actionRequest, options = {}) {
+            if (options.skipPreference) {
+                return originalDoAction.call(this, actionRequest, options);
+            }
+
+            try {
+                if (actionRequest.type === 'ir.actions.act_window') {
+                    actionRequest = await applyPreferenceToAction(actionRequest);
+                }
+                return originalDoAction.call(this, actionRequest, {
+                    ...options,
+                    skipPreference: true
+                });
+            } catch (error) {
+                console.warn('[ViewPreference] Error in doAction:', error);
+                return originalDoAction.call(this, actionRequest, options);
+            }
+        };
+
+        // Patch switchView untuk menangani perubahan view
+        const originalSwitchView = env.services.action.switchView;
+        env.services.action.switchView = async function(viewType, props = {}) {
+            console.log('[ViewPreference] 🔄 Switching to view:', viewType);
+            
+            try {
+                if (this.currentController?.action) {
+                    const action = this.currentController.action;
+                    const normalizedViewType = viewType === 'tree' ? 'list' : viewType;
+                    
+                    // Force reorder views
+                    const viewIndex = action.views.findIndex(v => 
+                        v[1] === normalizedViewType || 
+                        (normalizedViewType === 'list' && v[1] === 'tree')
+                    );
+                    
+                    if (viewIndex !== -1) {
+                        const [selectedView] = action.views.splice(viewIndex, 1);
+                        action.views = [selectedView, ...action.views];
+                        action.view_mode = action.views.map(v => v[1]).join(',');
+                        action.view_type = normalizedViewType;
+                        
+                        // Force context update
+                        action.context = {
+                            ...(action.context || {}),
+                            view_type: normalizedViewType,
+                            force_view_type: normalizedViewType,
+                            initial_view: normalizedViewType
+                        };
+
+                        // Save preference immediately
+                        await _saveViewPreference(
+                            env,
+                            action.res_model,
+                            normalizedViewType,
+                            action.id,
+                            action.display_name || action.name
+                        );
+                    }
+                }
+                
+                return originalSwitchView.call(this, viewType, props);
+            } catch (error) {
+                console.warn('[ViewPreference] Error in switchView:', error);
+                return originalSwitchView.call(this, viewType, props);
+            }
+        };
+
+        // Listen to navigation events
+        env.bus.addEventListener('ACTION_MANAGER:UI-UPDATED', async () => {
+            if (isProcessing) return;
+            
+            try {
+                isProcessing = true;
+                const controller = env.services.action.currentController;
+                if (controller?.action?.type === 'ir.actions.act_window') {
+                    await applyPreferenceToAction(controller.action);
+                }
+            } finally {
+                isProcessing = false;
+            }
+        });
+
+        return {
+            loadState,
+            switchView,
+            _getView,
+            _getSwitchViewParams,
+            _findView,
+            pushState,
+            _saveViewPreference,
+        };
+    },
 };
 
 // Register service
