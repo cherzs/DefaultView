@@ -70,10 +70,75 @@ function _findView(views, multiRecord, viewType) {
 /**
  * @returns {Promise<{actionRequest: Object, options: Object} | null>}
  */
+async function _getViewPreference(env, model, actionId) {
+    try {
+        // 1. Check session storage first (faster)
+        const sessionKey = `view_pref_${env.services.user.userId}_${model}_${actionId}`;
+        const storedPref = browser.sessionStorage.getItem(sessionKey);
+        
+        if (storedPref) {
+            const preference = JSON.parse(storedPref);
+            console.log("[ViewPreference] Found in session storage:", {
+                model,
+                actionId,
+                preference
+            });
+            return preference;
+        }
+
+        // 2. If not in session, check database
+        const prefs = await env.services.orm.searchRead(
+            'last.view.preference',
+            [
+                ['user_id', '=', env.services.user.userId],
+                ['model_name', '=', model],
+                ['action_id', '=', actionId]
+            ],
+            ['view_type', 'action_id', 'action_name'],
+            { limit: 1, order: 'write_date DESC' }
+        );
+
+        if (prefs?.length) {
+            const dbPref = {
+                model_name: model,
+                view_type: prefs[0].view_type,
+                action_id: prefs[0].action_id,
+                action_name: prefs[0].action_name,
+                timestamp: new Date().toISOString()
+            };
+
+            // Save to session storage for future use
+            browser.sessionStorage.setItem(sessionKey, JSON.stringify(dbPref));
+            
+            console.log("[ViewPreference] Found in database:", {
+                model,
+                actionId,
+                preference: dbPref
+            });
+            
+            return dbPref;
+        }
+
+        console.log("[ViewPreference] No preference found for:", {
+            model,
+            actionId
+        });
+        return null;
+
+    } catch (error) {
+        console.warn("[ViewPreference] Error getting preference:", error);
+        return null;
+    }
+}
+
+/**
+ * @returns {Promise<{actionRequest: Object, options: Object} | null>}
+ */
 async function _getActionParams() {
     const state = env.services.router.current.hash;
     const options = { clearBreadcrumbs: true };
     let actionRequest = null;
+
     if (state.action) {
         const context = {};
         if (state.active_id) {
@@ -106,6 +171,7 @@ async function _getActionParams() {
         }
     } else if (state.model) {
         if (state.id) {
+            // Form view for specific record
             actionRequest = {
                 res_model: state.model,
                 res_id: state.id,
@@ -113,38 +179,42 @@ async function _getActionParams() {
                 views: [[state.view_id ? state.view_id : false, "form"]],
             };
         } else if (state.view_type) {
-            const prefKey = `view_pref_${env.services.user.userId}_${state.model}`;
-            const storedPref = browser.sessionStorage.getItem(prefKey);
-            const lastPref = JSON.parse(storedPref || "{}");
+            // Try to get preference
+            const preference = await _getViewPreference(env, state.model, state.action);
             
-            if (!lastPref.view_type) {
-                const dbPref = await env.services.orm.call(
-                    'last.view.preference',
-                    'get_last_view_for_model',
-                    [state.model]
-                );
-                if (dbPref.view_type) {
-                    lastPref.view_type = dbPref.view_type;
-                    lastPref.action_id = dbPref.action_id;
-                    browser.sessionStorage.setItem(prefKey, JSON.stringify(dbPref));
-                }
-            }
-
-            if (lastPref.view_type) {
+            if (preference?.view_type) {
                 actionRequest = {
                     type: "ir.actions.act_window",
                     res_model: state.model,
-                    views: [[false, lastPref.view_type]],
-                    view_type: lastPref.view_type,
-                    action_id: lastPref.action_id
+                    views: [[false, preference.view_type]],
+                    view_type: preference.view_type,
+                    action_id: preference.action_id,
+                    name: preference.action_name
                 };
-                options.viewType = lastPref.view_type;
+                options.viewType = preference.view_type;
+                
+                console.log("[ViewPreference] Using preferred view:", {
+                    model: state.model,
+                    view: preference.view_type,
+                    action: preference.action_id,
+                    name: preference.action_name
+                });
+            } else {
+                // Fallback to default view type
+                actionRequest = {
+                    type: "ir.actions.act_window",
+                    res_model: state.model,
+                    views: [[false, state.view_type]],
+                };
+                options.viewType = state.view_type;
             }
         }
     }
+
     if (!actionRequest && env.services.user.home_action_id) {
         actionRequest = env.services.user.home_action_id;
     }
+
     return actionRequest ? { actionRequest, options } : null;
 }
 
