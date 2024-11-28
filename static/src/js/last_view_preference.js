@@ -1,5 +1,5 @@
 /** @odoo-module **/
-
+import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { patch } from "@web/core/utils/patch";
 import { useService } from "@web/core/utils/hooks";
@@ -99,10 +99,17 @@ export class LastViewPreference extends Component {
     static template = "DefaultView.LastViewPreference";
 
     setup() {
+        // Initialize services
         this.orm = useService("orm");
         this.user = useService("user");
-        this.state = useState({ isUserAction: false, lastSavedPreference: null });
+        this.action = useService("action");
+        
+        this.state = useState({ 
+            isUserAction: false, 
+            lastSavedPreference: null 
+        });
 
+        // Setup event listeners
         this.env.bus.addEventListener('ACTION_MANAGER:UI-UPDATED', async () => {
             if (this.state.isUserAction) await this._saveCurrentView();
         });
@@ -119,14 +126,13 @@ export class LastViewPreference extends Component {
         this.env.bus.addEventListener('ACTION_MANAGER:UPDATE', async () => {
             await this._saveCurrentView(true);
         });
+
+        console.log('[ViewPreference] 🔧 Component setup completed');
     }
 
     async _saveCurrentView(force = false) {
-        console.log('[ViewPreference] 🔄 Starting save operation:', {
-            force,
-            isUserAction: this.state.isUserAction
-        });
-
+        console.log('[ViewPreference] 🔄 Starting save operation');
+        
         const actionService = this.env.services.action;
         if (!actionService?.currentController) {
             console.warn('[ViewPreference] ⚠️ No current controller found');
@@ -137,123 +143,66 @@ export class LastViewPreference extends Component {
         const viewType = controller.view?.type;
         const model = controller.action?.res_model;
         const actionId = controller.action?.id;
+        const actionName = controller.action?.name || controller.action?.display_name;
 
         console.log('[ViewPreference] 📊 Current state:', {
             viewType,
             model,
             actionId,
-            controller: controller
+            actionName,
+            controller
         });
 
-        if ((force || this.state.isUserAction) && viewType && model) {
+        if ((force || this.state.isUserAction) && viewType && model && actionId) {
             try {
-                console.log('[ViewPreference] 📡 Calling save_last_view with params:', {
+                console.log('[ViewPreference] 📡 Calling save_last_view with:', {
                     model,
                     viewType,
                     actionId,
-                    userId: this.user.userId
+                    actionName
                 });
-
-                // Perbarui struktur parameter sesuai dengan method di server
-                const params = {
-                    model_name: model,
-                    view_type: viewType,
-                    action_id: actionId,
-                    user_id: this.user.userId
-                };
 
                 const result = await this.orm.call(
                     'last.view.preference',
                     'save_last_view',
-                    [],
-                    params
+                    [model, viewType, actionId, actionName]
                 );
 
                 console.log('[ViewPreference] 💾 Server response:', result);
 
-                // Simpan ke session storage
-                this._saveToSessionStorage(model, viewType, actionId);
-
-                // Update state
-                this.state.lastSavedPreference = {
-                    model,
-                    viewType,
-                    actionId,
-                    timestamp: new Date().getTime()
-                };
-
-                console.log('[ViewPreference] ✅ Save operation completed successfully');
+                if (result) {
+                    // Save to session storage
+                    const sessionKey = `view_pref_${this.user.userId}_${model}_${actionId}`;
+                    const sessionData = {
+                        model_name: model,
+                        view_type: viewType,
+                        action_id: actionId,
+                        action_name: actionName,
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    sessionStorage.setItem(sessionKey, JSON.stringify(sessionData));
+                    
+                    console.log('[ViewPreference] 💾 Saved to session storage:', {
+                        key: sessionKey,
+                        data: sessionData
+                    });
+                }
 
             } catch (error) {
-                console.error('[ViewPreference] ❌ Save error:', {
-                    error,
-                    message: error.message,
-                    name: error.name,
-                    stack: error.stack
-                });
-
-                // Simpan error ke session storage untuk debugging
-                const errorKey = `view_pref_error_${new Date().getTime()}`;
-                sessionStorage.setItem(errorKey, JSON.stringify({
-                    error: error.message,
-                    stack: error.stack,
-                    params: {
-                        model,
-                        viewType,
-                        actionId
-                    },
-                    timestamp: new Date().toISOString()
-                }));
-
-                // Re-throw specific errors untuk handling di level atas
-                if (error.message.includes('Access Denied')) {
-                    throw new Error('Permission denied when saving view preference');
-                }
-                if (error.message.includes('Missing required fields')) {
-                    throw new Error('Invalid data for saving view preference');
-                }
-                throw error;
+                console.error('[ViewPreference] ❌ Error:', error);
             } finally {
                 this.state.isUserAction = false;
-                console.log('[ViewPreference] 🏁 Operation completed');
             }
         } else {
-            console.log('[ViewPreference] ⏭️ Skipping save operation:', {
+            console.log('[ViewPreference] ⏭️ Skipping save:', {
                 force,
                 isUserAction: this.state.isUserAction,
                 hasViewType: !!viewType,
-                hasModel: !!model
+                hasModel: !!model,
+                hasActionId: !!actionId,
+                hasActionName: !!actionName
             });
-        }
-    }
-
-    _saveToSessionStorage(model, viewType, actionId) {
-        try {
-            const key = `view_pref_${this.user.userId}_${model}`;
-            const data = {
-                view_type: viewType,
-                model_name: model,
-                action_id: actionId,
-                user_id: this.user.userId,
-                timestamp: new Date().toISOString()
-            };
-
-            console.log('[ViewPreference] 💾 Saving to session storage:', {
-                key,
-                data
-            });
-
-            sessionStorage.setItem(key, JSON.stringify(data));
-
-            // Verifikasi penyimpanan
-            const saved = sessionStorage.getItem(key);
-            if (saved) {
-                console.log('[ViewPreference] ✅ Session storage verification successful');
-            } else {
-                console.warn('[ViewPreference] ⚠️ Session storage verification failed');
-            }
-        } catch (error) {
-            console.error('[ViewPreference] ❌ Session storage error:', error);
         }
     }
 }
