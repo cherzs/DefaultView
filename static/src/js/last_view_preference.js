@@ -5,354 +5,256 @@ import { patch } from "@web/core/utils/patch";
 import { useService } from "@web/core/utils/hooks";
 import { Component, useState } from "@odoo/owl";
 
-// Get action service from registry
-const actionService = registry.category("services").get("action");
-
-// Add menu service
-const menuService = registry.category("services").get("menu");
-
+// Utility untuk mengelola preferensi
 const ViewPreferenceManager = {
-    async getPreference(env, model, actionId) {
+    async getPreference(env, model) {
         const orm = env.services.orm;
         try {
-            // Get preference from database
-            const preference = await orm.searchRead(
+            // Use ORM service to fetch preference
+            const preference = await orm.call(
                 'last.view.preference',
-                [
-                    ['user_id', '=', env.session.uid],
-                    ['model_name', '=', model],
-                    ['action_id', '=', actionId],
-                    ['active', '=', true]
-                ],
-                ['view_type'],
-                { limit: 1 }
+                'get_last_view_for_model',
+                [model]
             );
-
-            console.log('[ViewPreference] Retrieved preference:', {
-                model,
-                actionId,
-                preference: preference[0]?.view_type
-            });
-
-            return preference[0]?.view_type || null;
+            console.log(`Retrieved preference for ${model}:`, preference);
+            return preference;
         } catch (error) {
-            console.error('[ViewPreference] Error getting preference:', error);
+            console.error('Error getting preference:', error.message, error);
             return null;
         }
     },
 
-    reorderViews(views, preferredViewType) {
-        if (!preferredViewType || !Array.isArray(views)) return views;
+    async applyPreference(action, preference) {
+        if (!preference?.view_type || !action.views) return false;
 
-        try {
-            // Deep clone views array
-            const viewsCopy = JSON.parse(JSON.stringify(views));
-            
-            // Find preferred view
-            const preferredViewIndex = viewsCopy.findIndex(v => v[1] === preferredViewType);
-            if (preferredViewIndex === -1) return viewsCopy;
+        const availableViews = action.views.map(view => view[1]);
+        if (!availableViews.includes(preference.view_type)) return false;
 
-            // Move preferred view to front (unless it's form view)
-            if (preferredViewType !== 'form') {
-                const preferredView = viewsCopy.splice(preferredViewIndex, 1)[0];
-                viewsCopy.unshift(preferredView);
-            }
-
-            return viewsCopy;
-        } catch (error) {
-            console.error('[ViewPreference] Error reordering views:', error);
-            return views;
-        }
-    },
-
-    async savePreference(env, model, viewType, actionId) {
-        const orm = env.services.orm;
-        try {
-            await orm.call(
-                'last.view.preference',
-                'save_last_view',
-                [],
-                {
-                    model_name: model,
-                    view_type: viewType,
-                    action_id: actionId
-                }
-            );
-            return true;
-        } catch (error) {
-            console.error('[ViewPreference] Error saving preference:', error);
-            return false;
-        }
-    },
-
-    _preferenceCache: new Map(),
-    
-    clearCache() {
-        this._preferenceCache.clear();
-    },
-    
-    getCached(model, actionId) {
-        return this._preferenceCache.get(`${model}_${actionId}`);
-    },
-    
-    setCache(model, actionId, preference) {
-        this._preferenceCache.set(`${model}_${actionId}`, preference);
+        console.log(`Forcing view ${preference.view_type} for ${action.res_model}`);
+        action.view_mode = preference.view_type;
+        action.views = action.views.filter(view => view[1] === preference.view_type);
+        action.preferenceApplied = true;
+        return true;
     }
 };
 
-// Perbaikan ViewState initialization
-const ViewState = {
-    state: {
-        currentView: null,
-        currentModel: null,
-        currentAction: null,
-        isUserAction: false,
-        lastSavedPreference: null,
-        isProcessing: false,
-        breadcrumbs: [],
-        uncommittedChanges: false
-    },
+// Patch menu service untuk menangkap klik menu
+const menuService = registry.category("services").get("menu");
+patch(menuService, {
+    async onMenuClick(menu) {
+        if (!menu.actionID) return super.onMenuClick(menu);
 
-    updateState(newState) {
-        if (!newState) return; // Guard clause untuk newState null/undefined
-        
-        // Pastikan state ada sebelum update
-        if (!this.state) {
-            this.state = {
-                currentView: null,
-                currentModel: null,
-                currentAction: null,
-                isUserAction: false,
-                lastSavedPreference: null,
-                isProcessing: false,
-                breadcrumbs: [],
-                uncommittedChanges: false
-            };
-        }
-
-        // Update state dengan safe copy
-        Object.assign(this.state, JSON.parse(JSON.stringify(newState)));
-    },
-
-    clearState() {
-        // Reset state dengan nilai default
-        this.state = {
-            currentView: null,
-            currentModel: null,
-            currentAction: null,
-            isUserAction: false,
-            lastSavedPreference: null,
-            isProcessing: false,
-            breadcrumbs: [],
-            uncommittedChanges: false
-        };
-    },
-
-    async saveState() {
-        if (this.state.currentView && this.state.currentModel && this.state.currentAction) {
-            sessionStorage.setItem('viewState', JSON.stringify({
-                view: this.state.currentView,
-                model: this.state.currentModel,
-                action: this.state.currentAction,
-                timestamp: new Date().getTime()
-            }));
-        }
-    },
-
-    async loadState() {
         try {
-            const stored = sessionStorage.getItem('viewState');
-            if (stored) {
-                const state = JSON.parse(stored);
-                // Validate state data
-                if (state.view && state.model && state.action) {
-                    this.updateState({
-                        currentView: state.view,
-                        currentModel: state.model,
-                        currentAction: state.action
-                    });
-                    return true;
+            const action = await this.env.services.action.loadAction(menu.actionID);
+            if (action?.type === 'ir.actions.act_window' && action.res_model) {
+                const preference = await ViewPreferenceManager.getPreference(this.env, action.res_model);
+                if (preference) {
+                    await ViewPreferenceManager.applyPreference(action, preference);
                 }
             }
+            return this.env.services.action.doAction(action, {
+                clearBreadcrumbs: true,
+                preferenceApplied: true
+            });
         } catch (error) {
-            console.error('[ViewPreference] Error loading state:', error);
+            console.error('Error in menu click handler:', error.message, error);
+            return super.onMenuClick(menu);
         }
-        return false;
     }
-};
+});
 
-class LastViewPreference extends Component {
+// Patch action service untuk memastikan preferensi tidak di-override
+const actionService = registry.category("services").get("action");
+patch(actionService, {
+    async doAction(action, options = {}) {
+        // Handle preferences
+        if (!options?.preferenceApplied && 
+            !action?.preferenceApplied && 
+            action?.type === 'ir.actions.act_window' && 
+            action.res_model) {
+            try {
+                const preference = await ViewPreferenceManager.getPreference(this.env, action.res_model);
+                ViewPreferenceManager.applyPreference(action, preference);
+            } catch (error) {
+                console.error('Error applying preference in doAction:', error.message, error);
+            }
+        }
+
+        // Cleanup viewType properties
+        if (options) {
+            delete options.viewType;
+            delete options.DefaultViewType;
+        }
+        if (action.context) {
+            delete action.context.view_type;
+            delete action.context.default_view_type;
+        }
+
+        return super.doAction(action, options);
+    }
+});
+
+// Component untuk mengelola preferensi view
+export class LastViewPreference extends Component {
     static template = "DefaultView.LastViewPreference";
 
     setup() {
         this.orm = useService("orm");
-        this.action = useService("action");
-        
-        // Initialize state dengan deep copy dari ViewState
-        this.state = useState({
-            viewState: JSON.parse(JSON.stringify(ViewState.state)), // Deep copy
-            preferences: {},
-            isLoading: false
-        });
-
-        // Bind methods
-        this._boundHandleViewSwitch = this._handleViewSwitch.bind(this);
-        this._boundSaveCurrentView = this._saveCurrentView.bind(this);
-        this._boundUpdateCurrentState = this._updateCurrentState.bind(this);
-
-        // Event listeners
-        this.env.bus.addEventListener('VIEW_SWITCHER:CLICK', async (event) => {
-            const viewType = event.detail?.viewType;
-            if (viewType) {
-                this.state.viewState.isUserAction = true;
-                this.state.viewState.currentView = viewType;
-                // Update ViewState safely
-                ViewState.updateState(this.state.viewState);
-                await this._saveCurrentView(false, viewType);
-                await this._handleViewSwitch(event);
-            }
-        });
+        this.user = useService("user");
+        this.state = useState({ isUserAction: false, lastSavedPreference: null });
 
         this.env.bus.addEventListener('ACTION_MANAGER:UI-UPDATED', async () => {
-            if (this.state.viewState.isUserAction) {
-                await this._saveCurrentView();
-            }
+            if (this.state.isUserAction) await this._saveCurrentView();
+        });
+
+        this.env.bus.addEventListener('VIEW_SWITCHER:CLICK', async () => {
+            this.state.isUserAction = true;
+            await this._saveCurrentView();
         });
 
         this.env.bus.addEventListener('USER_LOGOUT', async () => {
-            if (this.state.viewState.lastSavedPreference) {
-                await this._saveCurrentView(true);
-            }
+            if (this.state.lastSavedPreference) await this._saveCurrentView(true);
         });
 
         this.env.bus.addEventListener('ACTION_MANAGER:UPDATE', async () => {
-            await this._updateCurrentState();
+            await this._saveCurrentView(true);
+        });
+    }
+
+    async _saveCurrentView(force = false) {
+        console.log('[ViewPreference] 🔄 Starting save operation:', {
+            force,
+            isUserAction: this.state.isUserAction
         });
 
-        // Enhance dengan additional handlers
-        this.env.bus.addEventListener('CLEAR-UNCOMMITTED-CHANGES', async (callbacks) => {
-            if (this.state.viewState.uncommittedChanges) {
-                callbacks.push(async () => {
-                    const confirmed = await this.env.services.dialog.confirm(
-                        this.env._t("Unsaved changes will be lost. Do you want to proceed?")
-                    );
-                    if (confirmed) {
-                        this.state.viewState.uncommittedChanges = false;
-                        return true;
-                    }
-                    return false;
+        const actionService = this.env.services.action;
+        if (!actionService?.currentController) {
+            console.warn('[ViewPreference] ⚠️ No current controller found');
+            return;
+        }
+
+        const controller = actionService.currentController;
+        const viewType = controller.view?.type;
+        const model = controller.action?.res_model;
+        const actionId = controller.action?.id;
+
+        console.log('[ViewPreference] 📊 Current state:', {
+            viewType,
+            model,
+            actionId,
+            controller: controller
+        });
+
+        if ((force || this.state.isUserAction) && viewType && model) {
+            try {
+                console.log('[ViewPreference] 📡 Calling save_last_view with params:', {
+                    model,
+                    viewType,
+                    actionId,
+                    userId: this.user.userId
                 });
-            }
-        });
 
-        // Add window unload handler
-        window.addEventListener('beforeunload', this._handleBeforeUnload.bind(this));
-    }
+                // Perbarui struktur parameter sesuai dengan method di server
+                const params = {
+                    model_name: model,
+                    view_type: viewType,
+                    action_id: actionId,
+                    user_id: this.user.userId
+                };
 
-    async _handleBeforeUnload(event) {
-        if (this.state.viewState.uncommittedChanges) {
-            event.preventDefault();
-            event.returnValue = '';
-            return '';
-        }
-        await ViewState.saveState();
-    }
-
-    async _updateCurrentState() {
-        const controller = this.action.currentController;
-        if (controller?.action) {
-            this.state.viewState.currentModel = controller.action.res_model;
-            this.state.viewState.currentAction = controller.action.id;
-            this.state.viewState.currentView = controller.view?.type;
-            
-            // Save state after update
-            await ViewState.saveState();
-        }
-    }
-
-    async _saveCurrentView(force = false, specificViewType = null) {
-        if (this.state.viewState.isProcessing) return;
-        
-        try {
-            this.state.viewState.isProcessing = true;
-            this.state.isLoading = true;
-
-            const controller = this.action.currentController;
-            if (!controller?.action) return;
-
-            const viewType = specificViewType || this.state.viewState.currentView;
-            const model = this.state.viewState.currentModel;
-            const actionId = this.state.viewState.currentAction;
-
-            if ((force || this.state.viewState.isUserAction) && viewType && model && actionId) {
-                await this.orm.call(
+                const result = await this.orm.call(
                     'last.view.preference',
                     'save_last_view',
                     [],
-                    {
-                        model_name: model,
-                        view_type: viewType,
-                        action_id: actionId
-                    }
+                    params
                 );
 
-                this.state.viewState.lastSavedPreference = {
+                console.log('[ViewPreference] 💾 Server response:', result);
+
+                // Simpan ke session storage
+                this._saveToSessionStorage(model, viewType, actionId);
+
+                // Update state
+                this.state.lastSavedPreference = {
                     model,
                     viewType,
                     actionId,
                     timestamp: new Date().getTime()
                 };
 
-                // Update preferences cache
-                this.state.preferences[`${model}_${actionId}`] = viewType;
+                console.log('[ViewPreference] ✅ Save operation completed successfully');
 
-                console.log('[ViewPreference] Saved state:', this.state.viewState);
+            } catch (error) {
+                console.error('[ViewPreference] ❌ Save error:', {
+                    error,
+                    message: error.message,
+                    name: error.name,
+                    stack: error.stack
+                });
+
+                // Simpan error ke session storage untuk debugging
+                const errorKey = `view_pref_error_${new Date().getTime()}`;
+                sessionStorage.setItem(errorKey, JSON.stringify({
+                    error: error.message,
+                    stack: error.stack,
+                    params: {
+                        model,
+                        viewType,
+                        actionId
+                    },
+                    timestamp: new Date().toISOString()
+                }));
+
+                // Re-throw specific errors untuk handling di level atas
+                if (error.message.includes('Access Denied')) {
+                    throw new Error('Permission denied when saving view preference');
+                }
+                if (error.message.includes('Missing required fields')) {
+                    throw new Error('Invalid data for saving view preference');
+                }
+                throw error;
+            } finally {
+                this.state.isUserAction = false;
+                console.log('[ViewPreference] 🏁 Operation completed');
+            }
+        } else {
+            console.log('[ViewPreference] ⏭️ Skipping save operation:', {
+                force,
+                isUserAction: this.state.isUserAction,
+                hasViewType: !!viewType,
+                hasModel: !!model
+            });
+        }
+    }
+
+    _saveToSessionStorage(model, viewType, actionId) {
+        try {
+            const key = `view_pref_${this.user.userId}_${model}`;
+            const data = {
+                view_type: viewType,
+                model_name: model,
+                action_id: actionId,
+                user_id: this.user.userId,
+                timestamp: new Date().toISOString()
+            };
+
+            console.log('[ViewPreference] 💾 Saving to session storage:', {
+                key,
+                data
+            });
+
+            sessionStorage.setItem(key, JSON.stringify(data));
+
+            // Verifikasi penyimpanan
+            const saved = sessionStorage.getItem(key);
+            if (saved) {
+                console.log('[ViewPreference] ✅ Session storage verification successful');
+            } else {
+                console.warn('[ViewPreference] ⚠️ Session storage verification failed');
             }
         } catch (error) {
-            console.error('[ViewPreference] Save error:', error);
-        } finally {
-            this.state.viewState.isProcessing = false;
-            this.state.isLoading = false;
-            this.state.viewState.isUserAction = false;
+            console.error('[ViewPreference] ❌ Session storage error:', error);
         }
-    }
-
-    async _handleViewSwitch(event) {
-        if (this.state.viewState.isProcessing) return;
-
-        const viewType = event.detail?.viewType;
-        if (!viewType || viewType === 'form') return;
-
-        try {
-            this.state.viewState.isProcessing = true;
-            const controller = this.action.currentController;
-            if (!controller?.action) return;
-
-            await this.action.doAction(
-                {...controller.action},
-                {
-                    clearBreadcrumbs: false,
-                    viewType: viewType
-                }
-            );
-        } catch (error) {
-            console.error('[ViewPreference] Switch error:', error);
-        } finally {
-            this.state.viewState.isProcessing = false;
-        }
-    }
-
-    destroy() {
-        // Remove all event listeners
-        this.env.bus.removeEventListener('VIEW_SWITCHER:CLICK', this._boundHandleViewSwitch);
-        this.env.bus.removeEventListener('ACTION_MANAGER:UI-UPDATED', this._boundSaveCurrentView);
-        this.env.bus.removeEventListener('USER_LOGOUT', this._boundSaveCurrentView);
-        this.env.bus.removeEventListener('ACTION_MANAGER:UPDATE', this._updateCurrentState);
-        this.env.bus.removeEventListener('CLEAR-UNCOMMITTED-CHANGES', this._handleUncommittedChanges);
-        
-        window.removeEventListener('beforeunload', this._handleBeforeUnload);
-        ViewState.clearState();
-        super.destroy();
     }
 }
 
@@ -395,80 +297,58 @@ async function getViewPreference(env, model) {
     return null;
 }
 
-// Enhance action service patch
-patch(actionService.prototype,{
-    async loadAction(actionRequest, context = {}) {
-        // Check for uncommitted changes first
-        const canProceed = await this._clearUncommittedChanges();
-        if (!canProceed) {
-            return false;
-        }
-
-        const result = await this._super(...arguments);
+patch(actionService, {
+    async loadAction(actionId, context = {}, options = {}) {
+        const result = await super.loadAction(actionId, context, options);
         
-        if (result.type === 'ir.actions.act_window' && result.views) {
+        if (result.type === 'ir.actions.act_window' && 
+            result.res_model && 
+            !result.res_model.startsWith('ir.')) {
+            
+            console.log("[ViewPreference] Processing action:", {
+                model: result.res_model,
+                currentViews: result.views,
+                currentViewMode: result.view_mode
+            });
+
             try {
-                // Try to load saved state first
-                const hasState = await ViewState.loadState();
-                if (!hasState) {
-                    // Fallback to database preference
-                    const preference = await ViewPreferenceManager.getPreference(
-                        this.env,
-                        result.res_model,
-                        result.id
-                    );
-                    if (preference) {
-                        ViewState.updateState({
-                            currentView: preference,
-                            currentModel: result.res_model,
-                            currentAction: result.id
+                const preferredView = await getViewPreference(this.env, result.res_model);
+                
+                if (preferredView && result.views) {
+                    const availableViews = result.views.map(v => v[1]);
+                    if (availableViews.includes(preferredView)) {
+                        console.log(`[ViewPreference] Overriding with: ${preferredView}`);
+                        
+                        result.view_mode = preferredView;
+                        
+                        const preferredViewData = result.views.find(v => v[1] === preferredView);
+                        const formViewData = result.views.find(v => v[1] === 'form');
+                        
+                        result.views = [
+                            preferredViewData,
+                            ...(formViewData ? [formViewData] : [])
+                        ];
+
+                        if (result.context && result.context.view_type) {
+                            delete result.context.view_type;
+                        }
+
+                        console.log("[ViewPreference] Final configuration:", {
+                            view_mode: result.view_mode,
+                            views: result.views
                         });
+                    } else {
+                        console.log(`[ViewPreference] Preferred view ${preferredView} not available`);
                     }
                 }
-
-                // Update view based on state
-                if (ViewState.state.currentView) {
-                    result.view_type = ViewState.state.currentView;
-                }
             } catch (error) {
-                console.error('[ViewPreference] Load action error:', error);
+                console.warn("[ViewPreference] Error applying preference:", error);
             }
         }
         
         return result;
     },
 
-    async _clearUncommittedChanges() {
-        const callbacks = [];
-        this.env.bus.trigger("CLEAR-UNCOMMITTED-CHANGES", callbacks);
-        const results = await Promise.all(callbacks.map(fn => fn()));
-        return !results.includes(false);
-    }
 });
 
-// Patch menu service
-patch(menuService.prototype, 'last_view_preference_menu', {
-    async selectMenu(menu) {
-        if (menu.actionID) {
-            try {
-                // Get last view preference before menu action
-                const preference = await ViewPreferenceManager.getPreference(
-                    this.env,
-                    menu.action?.res_model,
-                    menu.actionID
-                );
-                
-                if (preference) {
-                    ViewState.updateState({
-                        currentView: preference,
-                        currentModel: menu.action?.res_model,
-                        currentAction: menu.actionID
-                    });
-                }
-            } catch (error) {
-                console.error('[ViewPreference] Menu selection error:', error);
-            }
-        }
-        return this._super(...arguments);
-    }
-});
+console.log("[ViewPreference] View override initialized");
