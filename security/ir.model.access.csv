@@ -1,2 +1,3 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_last_view_preference,last.view.preference,model_last_view_preference,base.group_user,1,1,1,1
+access_view_mode_reorder_mixin,view.mode.reorder.mixin,model_view_mode_reorder_mixin,base.group_user,1,1,1,1
