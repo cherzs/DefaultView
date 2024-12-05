@@ -9,8 +9,6 @@ class LastViewPreference(models.Model):
     _description = 'Last View Preference'
     _order = 'write_date desc'
     
-    user_id = fields.Many2one('res.users', string='User', required=True, 
-                             default=lambda self: self.env.user)
     user_name = fields.Char(related='user_id.name', store=True)
     model_name = fields.Char(string='Model Name', required=True, index=True)
     view_type = fields.Selection([
@@ -30,7 +28,6 @@ class LastViewPreference(models.Model):
     action_id = fields.Integer('Action ID', required=True)
     action_name = fields.Char('Action Name', help="Name of the action/menu")
     user_id = fields.Many2one('res.users', 'User', required=True, default=lambda self: self.env.user)
-    active = fields.Boolean('Active', default=True)
 
     _sql_constraints = [
         ('unique_preference', 
