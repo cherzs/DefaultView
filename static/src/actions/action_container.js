@@ -12,7 +12,7 @@ patch(ActionContainer.prototype, {
             const currentViewType = info.componentProps?.type;
             console.log('[ViewPreference] Current view type:', currentViewType);
 
-            if (!currentViewType) {
+            if (!currentViewType && info.componentProps?.resModel) {
                 const lastView = await this.orm.call('last.view.preference', 'get_last_view_for_model', [info.componentProps.resModel], {})
                 if (lastView) {
                     info.componentProps.type = lastView;
