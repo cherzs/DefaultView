@@ -5,114 +5,6 @@ import { patch } from "@web/core/utils/patch";
 import { useService } from "@web/core/utils/hooks";
 import { Component, useState } from "@odoo/owl";
 
-// Utility untuk mengelola preferensi
-const ViewPreferenceManager = {
-    async getPreference(env, model) {
-        const orm = env.services.orm;
-        try {
-            const preference = await orm.call(
-                'last.view.preference',
-                'get_last_view_for_model',
-                [model]
-            );
-            console.log(`[ViewPreference] 🔍 Retrieved preference for ${model}:`, preference);
-            
-            // Normalize view type (handle both 'list' and 'tree')
-            if (preference?.view_type === 'tree') {
-                preference.view_type = 'list';
-            }
-            
-            return preference;
-        } catch (error) {
-            console.error('[ViewPreference] ❌ Error getting preference:', error.message, error);
-            return null;
-        }
-    },
-
-    async applyPreference(action, preference) {
-        if (!preference?.view_type || !action.views) return false;
-
-        console.log('[ViewPreference] 🚀 Starting preference application:', {
-            preferredView: preference.view_type,
-            currentViews: action.views.map(v => v[1]),
-            actionModel: action.res_model
-        });
-
-        // Normalize the preferred view type
-        let normalizedViewType = preference.view_type;
-        if (normalizedViewType === 'tree') normalizedViewType = 'list';
-
-        // Find available views
-        const hasListView = action.views.some(v => v[1] === 'list');
-        const hasTreeView = action.views.some(v => v[1] === 'tree');
-        
-        // Convert all tree views to list views
-        action.views = action.views.map(view => {
-            return view[1] === 'tree' ? [view[0], 'list'] : view;
-        });
-
-        // Force view configuration for list/tree
-        if (normalizedViewType === 'list') {
-            if (!hasListView && !hasTreeView) {
-                console.log('[ViewPreference] ⚠️ No list/tree view available');
-                return false;
-            }
-
-            // Force list view mode
-            action.view_mode = 'list';
-            
-            // Find the list view data
-            const listViewData = action.views.find(v => v[1] === 'list');
-            const formViewData = action.views.find(v => v[1] === 'form');
-            const otherViews = action.views.filter(v => 
-                v[1] !== 'list' && v[1] !== 'form'
-            );
-
-            // Reconstruct views array with list view first
-            action.views = [
-                listViewData,
-                ...(formViewData ? [formViewData] : []),
-                ...otherViews
-            ];
-
-            // Force context
-            action.context = {
-                ...(action.context || {}),
-                view_type: 'list'
-            };
-        } else {
-            // Handle other view types normally
-            action.view_mode = normalizedViewType;
-            const preferredViewData = action.views.find(v => v[1] === normalizedViewType);
-            const formViewData = action.views.find(v => v[1] === 'form');
-            const otherViews = action.views.filter(v => 
-                v[1] !== normalizedViewType && v[1] !== 'form'
-            );
-
-            action.views = [
-                preferredViewData,
-                ...(formViewData ? [formViewData] : []),
-                ...otherViews
-            ];
-        }
-
-        // Ensure view_mode matches the first view
-        action.view_mode = action.views[0][1];
-        
-        // Clean up any conflicting settings
-        if (action.context) {
-            delete action.context.default_view_type;
-        }
-
-        console.log('[ViewPreference] ✅ Final action config:', {
-            view_mode: action.view_mode,
-            views: action.views.map(v => v[1]),
-            context: action.context
-        });
-
-        return true;
-    }
-};
 
 // Patch menu service untuk menangkap klik menu
 const menuService = registry.category("services").get("menu");
@@ -129,8 +21,6 @@ patch(menuService, {
 
             if (action?.type === 'ir.actions.act_window' && action.res_model) {
                 // 2. Terapkan preferensi langsung ke action
-                const normalizedViewType = preference?.view_type === 'tree' ? 'list' : preference?.view_type;
-                
                 if (normalizedViewType && action.views) {
                     // 3. Reorder views dengan view yang diinginkan di posisi pertama
                     const preferredViewIndex = action.views.findIndex(v => 
@@ -181,17 +71,6 @@ patch(menuService, {
         }
     }
 });
-
-// Tambahkan utility function untuk normalisasi view
-const ViewPreferenceUtils = {
-    normalizeViewType(viewType) {
-        return viewType === 'tree' ? 'list' : viewType;
-    },
-    
-    isListView(viewType) {
-        return viewType === 'list' || viewType === 'tree';
-    }
-};
 
 // Patch action service untuk memastikan view preference diterapkan
 const actionService = registry.category("services").get("action");
@@ -379,38 +258,6 @@ registry.category("main_components").add("LastViewPreference", {
 });
 
 console.log("[ViewPreference] Initializing view loading override...");
-
-async function getViewPreference(env, model) {
-    const orm = env.services.orm;
-
-    try {
-        // Check database first
-        const prefs = await orm.searchRead(
-            'last.view.preference',
-            [['user_id', '=', env.session.uid], ['model_name', '=', model]],
-            ['view_type'],
-            { limit: 1, order: 'write_date DESC' }
-        );
-
-        if (prefs?.length && prefs[0].view_type) {
-            console.log("[ViewPreference] Using DB preference:", prefs[0].view_type);
-            return prefs[0].view_type;
-        }
-
-        // Fallback to session storage
-        const key = `view_pref_${env.session.uid}_${model}`;
-        const stored = sessionStorage.getItem(key);
-        if (stored) {
-            const preference = JSON.parse(stored);
-            console.log("[ViewPreference] Using session preference:", preference.view_type);
-            return preference.view_type;
-        }
-    } catch (error) {
-        console.warn("[ViewPreference] Error getting preference:", error);
-    }
-
-    return null;
-}
 
 patch(actionService, {
     async loadAction(actionId, context = {}, options = {}) {

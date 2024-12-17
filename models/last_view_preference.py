@@ -35,15 +35,6 @@ class LastViewPreference(models.Model):
          'View preference must be unique per model, user and action!')
     ]
 
-    @api.model
-    def get_last_view_for_model(self, model_name):
-        """Retrieve last view preference for the given model."""
-        if not model_name:
-            raise ValidationError(_("Model name is required."))
-        preference = self.search([('user_id', '=', self.env.uid), ('model_name', '=', model_name)], limit=1)
-        return {
-            'view_type': preference.view_type if preference else False,
-        }
 
     @api.model
     def save_last_view(self, model, view_type, action_id, action_name=False):
@@ -88,3 +79,16 @@ class LastViewPreference(models.Model):
         except Exception as e:
             _logger.error("[ViewPreference] Error: %s", str(e))
             return False
+        
+    @api.model
+    def get_last_view_for_model(self, model_name):
+        """Retrieve last view preference for the given model."""
+        if not model_name:
+            raise ValidationError(_("Model name is required."))
+        preference = self.search([
+            ('model_name', '=', model_name),
+            ('user_id', '=', self.env.user.id)  # Tambahkan filter berdasarkan user
+        ], limit=1)
+        return {
+            'view_type': preference.view_type if preference else False,
+        }

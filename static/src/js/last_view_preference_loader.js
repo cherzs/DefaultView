@@ -67,23 +67,6 @@ function _findView(views, multiRecord, viewType) {
     return views.find((v) => v.type === viewType && v.multiRecord == multiRecord);
 }
 
-// Tambahkan utility function di awal file
-const ViewTypeUtils = {
-    normalizeViewType(viewType) {
-        // Normalize tree to list
-        return viewType === 'tree' ? 'list' : viewType;
-    },
-
-    denormalizeViews(views) {
-        // Convert view configurations
-        return views.map(view => {
-            if (view[1] === 'tree') {
-                return [view[0], 'list'];
-            }
-            return view;
-        });
-    }
-};
 
 /**
  * @returns {Promise<{actionRequest: Object, options: Object} | null>}

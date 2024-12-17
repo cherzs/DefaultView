@@ -11,9 +11,9 @@
     ],
     'assets': {
         'web.assets_backend': [
+            'DefaultView/static/src/xml/last_view_preference.xml',
             'DefaultView/static/src/js/last_view_preference.js',
             'DefaultView/static/src/js/last_view_preference_loader.js',
-            'DefaultView/static/src/xml/last_view_preference.xml',
             'DefaultView/static/src/actions/action_container.js',
         ],
     },
