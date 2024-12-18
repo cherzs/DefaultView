@@ -44,43 +44,19 @@ class IrActionsActWindowInherit(models.Model):
                 current_view_mode = action_data.get('view_mode', '')
                 
                 if current_view_mode and preferred_view in current_view_mode:
-                    # Split view_mode into list
-                    view_types = current_view_mode.split(',')
-                    
-                    # Remove preferred view from current position
-                    if preferred_view in view_types:
-                        view_types.remove(preferred_view)
-                        # Add it to the beginning
-                        view_types.insert(0, preferred_view)
-                    
-                    # Create new view_mode string
-                    new_view_mode = ','.join(view_types)
-                    
-                    # Reorder views array
-                    view_dict = {v[1]: v for v in current_views}
-                    new_views = []
-                    for vtype in view_types:
-                        if vtype in view_dict:
-                            new_views.append(view_dict[vtype])
-                        else:
-                            new_views.append([False, vtype])
-                    
-                    # Update action data
-                    action_data['view_mode'] = new_view_mode
-                    action_data['views'] = new_views
-                    
-                    # Force initial view type in context
+                    # Hanya update context untuk memaksa view type yang diinginkan
                     if not action_data.get('context'):
                         action_data['context'] = {}
                     action_data['context'].update({
                         'view_type': preferred_view,
-                        'force_view_type': preferred_view
+                        'force_view_type': preferred_view,
+                        'initial_view': preferred_view
                     })
 
-                    _logger.info(f"Views reordered for {model_name} (action_id: {action_id})")
+                    _logger.info(f"View preference applied for {model_name} (action_id: {action_id})")
 
         except Exception as e:
-            _logger.error(f"Error reordering views: {str(e)}")
+            _logger.error(f"Error applying view preference: {str(e)}")
 
         return action_data
 
