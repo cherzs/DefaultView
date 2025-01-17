@@ -30,7 +30,6 @@ patch(ActionContainer.prototype, {
                         
                         if (lastView && lastView.view_type) {
                             const originalType = info.componentProps.type;
-                            
                             info.componentProps.type = lastView.view_type;
                             
                             console.log("[LastViewPreference] View type changed from", 

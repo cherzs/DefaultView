@@ -4,7 +4,7 @@
     'category': 'Tools',
     'summary': 'Save and restore last view preference per user',
     'depends': ['base', 'web'],
-    'sequence': -100,
+    'sequence': -1000,
     'data': [
         'security/ir.model.access.csv',
         'views/last_view_preference_views.xml',

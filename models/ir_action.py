@@ -36,15 +36,13 @@ class IrActionsActWindowInherit(models.Model):
 
             if last_preference:
                 preferred_view = last_preference.view_type
-                if preferred_view == 'tree':
-                    preferred_view = 'list'
 
                 # Get current views and view_mode
                 current_views = action_data.get('views', [])
                 current_view_mode = action_data.get('view_mode', '')
                 
                 if current_view_mode and preferred_view in current_view_mode:
-                    # Hanya update context untuk memaksa view type yang diinginkan
+                    # Update context to force the desired view type
                     if not action_data.get('context'):
                         action_data['context'] = {}
                     action_data['context'].update({
